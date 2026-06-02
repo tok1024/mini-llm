@@ -4,11 +4,11 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+import time
 from typing import IO, BinaryIO, Iterable, Optional
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from cs336_basics.model import TransformerLM
 
@@ -94,6 +94,7 @@ def load_token_array(path: str) -> np.ndarray:
     # return np.load(path, mmap_mode="r")
     if(path.endswith(".npy")): return np.load(path, mmap_mode="r")
     elif(path.endswith(".bin")): return np.memmap(path, mode="r")
+    raise ValueError(f"Unsupported token array format: {path}")
 
 
 def get_batch(dataset: np.ndarray, batch_size: int, context_length: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
@@ -127,7 +128,7 @@ def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Ten
     nlh = -(correct_logits - log_sum).mean()
     return nlh
 
-def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> float:
     # 任务拆解:
     # 1) 收集所有非None梯度
     grads = []
@@ -137,12 +138,38 @@ def clip_gradients(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float)
         grads.append(param.grad)
 
     # 2) 计算全局L2 norm
-    l2_norm = math.sqrt(sum((g.data**2).sum() for g in grads))
+    l2_norm = math.sqrt(sum((g.data**2).sum().item() for g in grads))
 
     # 3) 若norm > max_l2_norm，按同一比例缩放每个梯度
     if l2_norm > max_l2_norm:
         for g in grads:
             g.data = g.data * max_l2_norm / (l2_norm + 1e-6)
+
+    return l2_norm
+
+
+def get_grad_l2_norm(parameters: Iterable[torch.nn.Parameter]) -> float:
+    squared_norm = 0.0
+    for param in parameters:
+        if param.grad is None:
+            continue
+        squared_norm += float((param.grad.data**2).sum().item())
+    return math.sqrt(squared_norm)
+
+
+def safe_exp(value: float) -> float:
+    if value > 100:
+        return float("inf")
+    return math.exp(value)
+
+
+def format_metrics(metrics: dict[str, float | int]) -> str:
+    return " ".join(
+        f"{key}={value:.4e}" if isinstance(value, float) and (abs(value) >= 1e4 or 0 < abs(value) < 1e-3)
+        else f"{key}={value:.4f}" if isinstance(value, float)
+        else f"{key}={value}"
+        for key, value in metrics.items()
+    )
 
 
 def get_lr_cosine_schedule(
@@ -232,8 +259,23 @@ def train(cfg: TrainConfig) -> None:
 
     train_data = load_token_array(cfg.train_tokens_path)
     eval_data = load_token_array(cfg.valid_tokens_path)
+    tokens_per_iter = cfg.batch_size * cfg.context_length
+    train_start_time = time.perf_counter()
+
+    print(
+        format_metrics(
+            {
+                "params": sum(param.numel() for param in model.parameters()),
+                "train_tokens": len(train_data),
+                "valid_tokens": len(eval_data),
+                "tokens_per_iter": tokens_per_iter,
+            }
+        ),
+        flush=True,
+    )
 
     for it in range(cfg.total_iters):
+        step_start_time = time.perf_counter()
         # 优化器每次循环初始化
         opt.zero_grad() # 首先记得给优化器梯度清零
         # 应用余弦调度
@@ -251,11 +293,33 @@ def train(cfg: TrainConfig) -> None:
         # 计算loss和梯度
         loss = cross_entropy_loss(logits, targets)
         loss.backward()
-        clip_gradients(model.parameters(), cfg.max_grad_norm)
+        grad_norm = clip_gradients(model.parameters(), cfg.max_grad_norm)
         opt.step()
+        step_sec = time.perf_counter() - step_start_time
+        tokens_seen = (it + 1) * tokens_per_iter
+        elapsed_sec = time.perf_counter() - train_start_time
+        tokens_per_sec = tokens_seen / elapsed_sec if elapsed_sec > 0 else 0.0
+
         if it % cfg.eval_interval == 0:
             val_loss = evaluate(model, eval_data, cfg)
-            print(f"it={it} train_loss={loss.item():.4f} val_loss={val_loss:.4f} lr={lr:.6e}")
+            print(
+                format_metrics(
+                    {
+                        "it": it,
+                        "tokens_seen": tokens_seen,
+                        "train_loss": loss.item(),
+                        "train_ppl": safe_exp(loss.item()),
+                        "val_loss": val_loss,
+                        "val_ppl": safe_exp(val_loss),
+                        "lr": lr,
+                        "grad_norm": grad_norm,
+                        "step_sec": step_sec,
+                        "elapsed_sec": elapsed_sec,
+                        "tokens_per_sec": tokens_per_sec,
+                    }
+                ),
+                flush=True,
+            )
         if it % cfg.checkpoint_interval == 0:
             save_checkpoint(model, opt, it, cfg.checkpoint_path)
 

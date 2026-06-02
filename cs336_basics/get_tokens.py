@@ -7,10 +7,10 @@ tokenizer = get_tokenizer_from_vocab_merges_path(
     special_tokens=["<|endoftext|>"],
 )
 
-train_text = "data/ts_train.txt"
-val_text = "data/ts_train.txt"
-train_tokens_path = "data/ts_train.npy"
-val_tokens_path = "data/ts_val.npy"
+train_text = "data/ts-train.txt"
+val_text = "data/ts-train.txt"
+train_tokens_path = "data/ts-train.npy"
+val_tokens_path = "data/ts-val.npy"
 
 
 def tokenize_file(input_path: str, output_path: str, log_every: int = 10000):
