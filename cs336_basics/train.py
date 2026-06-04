@@ -36,6 +36,8 @@ class TrainConfig:
     device: str = "cpu"
     checkpoint_path: str = "checkpoints/latest.pt"
     checkpoint_interval: int = 40
+    dtype: str = "bf16"
+    metrics_path: str = "runs/0.5b/metrics.csv"
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -163,13 +165,51 @@ def safe_exp(value: float) -> float:
     return math.exp(value)
 
 
-def format_metrics(metrics: dict[str, float | int]) -> str:
+def format_metrics(metrics: dict[str, float | int | str]) -> str:
     return " ".join(
         f"{key}={value:.4e}" if isinstance(value, float) and (abs(value) >= 1e4 or 0 < abs(value) < 1e-3)
         else f"{key}={value:.4f}" if isinstance(value, float)
         else f"{key}={value}"
         for key, value in metrics.items()
     )
+
+
+def get_autocast_dtype(dtype: str) -> torch.dtype | None:
+    if dtype == "fp32":
+        return None
+    if dtype == "bf16":
+        return torch.bfloat16
+    if dtype == "fp16":
+        return torch.float16
+    raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+def get_autocast_device(device: str) -> str:
+    return "cuda" if device.startswith("cuda") else "cpu"
+
+
+def should_use_autocast(cfg: TrainConfig) -> bool:
+    return cfg.dtype != "fp32"
+
+
+def forward_loss(
+    model: TransformerLM,
+    batch: torch.Tensor,
+    targets: torch.Tensor,
+    cfg: TrainConfig,
+) -> torch.Tensor:
+    # 优化点：使用autocast自动选择dtype，使用bf16可以加速计算
+    autocast_dtype = get_autocast_dtype(cfg.dtype)
+    with torch.autocast(
+        device_type=get_autocast_device(cfg.device),
+        dtype=autocast_dtype or torch.float32,
+        enabled=should_use_autocast(cfg),
+    ):
+        logits = model(batch)
+
+    logits = logits.float().reshape(-1, logits.shape[-1])
+    targets = targets.reshape(-1)
+    return cross_entropy_loss(logits, targets)
 
 
 def get_lr_cosine_schedule(
@@ -231,10 +271,8 @@ def evaluate(
     with torch.no_grad():
         for _ in range(cfg.eval_batches):
             x, y = get_batch(valid_data, cfg.batch_size, cfg.context_length, cfg.device)
-            logits = model(x)
-            logits = logits.reshape(-1, logits.shape[-1])
-            y = y.reshape(-1)
-            losses.append(cross_entropy_loss(logits, y).item())
+            loss = forward_loss(model, x, y, cfg)
+            losses.append(loss.item())
     model.train()
     return float(np.mean(losses))
 
@@ -251,6 +289,15 @@ def build_model(cfg: TrainConfig) -> TransformerLM:
     )
     return model.to(cfg.device)
 
+def write_metrics(metrics: dict[str, float | int | str], path:str) -> None:
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    should_write_header = not out_path.exists()
+    with out_path.open("a", encoding="utf-8") as f:
+        # csv 格式： 列名，值
+        if should_write_header:
+            f.write(",".join(metrics.keys()) + "\n")
+        f.write(",".join(str(value) for value in metrics.values()) + "\n")
 
 def train(cfg: TrainConfig) -> None:
     set_seed(cfg.seed)
@@ -264,13 +311,13 @@ def train(cfg: TrainConfig) -> None:
 
     print(
         format_metrics(
-            {
-                "params": sum(param.numel() for param in model.parameters()),
-                "train_tokens": len(train_data),
-                "valid_tokens": len(eval_data),
-                "tokens_per_iter": tokens_per_iter,
-            }
-        ),
+        {
+            "params": sum(param.numel() for param in model.parameters()),
+            "train_tokens": len(train_data),
+            "valid_tokens": len(eval_data),
+            "tokens_per_iter": tokens_per_iter,
+            "dtype": str(cfg.dtype),
+        }),
         flush=True,
     )
 
@@ -284,15 +331,10 @@ def train(cfg: TrainConfig) -> None:
             group['lr'] = lr
         # 取一个小batch
         batch, targets = get_batch(train_data, cfg.batch_size, cfg.context_length, cfg.device)
-        # 计算序列内每个token对每个token的前向
-        logits = model(batch)
-        d = logits.shape[-1]
-        # 改形状 logits(B, V), targets(B)
-        logits = logits.reshape(-1, d) # (B, d), 把每个batch不同step的都归为一类, 计算交叉熵
-        targets = targets.reshape(-1)
-        # 计算loss和梯度
-        loss = cross_entropy_loss(logits, targets)
+        
+        loss = forward_loss(model, batch, targets, cfg)
         loss.backward()
+        
         grad_norm = clip_gradients(model.parameters(), cfg.max_grad_norm)
         opt.step()
         step_sec = time.perf_counter() - step_start_time
@@ -302,29 +344,26 @@ def train(cfg: TrainConfig) -> None:
 
         if it % cfg.eval_interval == 0:
             val_loss = evaluate(model, eval_data, cfg)
-            print(
-                format_metrics(
-                    {
-                        "it": it,
-                        "tokens_seen": tokens_seen,
-                        "train_loss": loss.item(),
-                        "train_ppl": safe_exp(loss.item()),
-                        "val_loss": val_loss,
-                        "val_ppl": safe_exp(val_loss),
-                        "lr": lr,
-                        "grad_norm": grad_norm,
-                        "step_sec": step_sec,
-                        "elapsed_sec": elapsed_sec,
-                        "tokens_per_sec": tokens_per_sec,
-                    }
-                ),
-                flush=True,
-            )
+            metrics = {
+                "it": it,
+                "tokens_seen": tokens_seen,
+                "train_loss": loss.item(),
+                "train_ppl": safe_exp(loss.item()),
+                "val_loss": val_loss,
+                "val_ppl": safe_exp(val_loss),
+                "lr": lr,
+                "grad_norm": grad_norm,
+                "step_sec": step_sec,
+                "elapsed_sec": elapsed_sec,
+                "tokens_per_sec": tokens_per_sec,
+            }
+            print(format_metrics(metrics))
+            write_metrics(metrics, cfg.metrics_path)
         if it % cfg.checkpoint_interval == 0:
             save_checkpoint(model, opt, it, cfg.checkpoint_path)
 
 def parse_args() -> TrainConfig:
-    parser = argparse.ArgumentParser(description="Training entry for CS336 assignment")
+    parser = argparse.ArgumentParser(description="Training entry for mini-llm")
     parser.add_argument("--train_tokens_path", type=str, required=True)
     parser.add_argument("--valid_tokens_path", type=str, required=True)
     parser.add_argument("--vocab_size", type=int, default=50257)
@@ -347,6 +386,8 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--checkpoint_path", type=str, default="/sda1/szl/cs336/checkpoints/latest.pt")
+    parser.add_argument("--dtype", type=str, default="bf16")
+    parser.add_argument("--metrics_path", type=str, default="runs/0.5b/metrics.csv")
 
     args = parser.parse_args()
     return TrainConfig(**vars(args))

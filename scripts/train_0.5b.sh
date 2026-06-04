@@ -30,7 +30,7 @@ mkdir -p "${RUN_DIR}" "${CHECKPOINT_DIR}"
     --num_heads 18 \
     --d_ff 3072 \
     --rope_theta 10000 \
-    --batch_size 1 \
+    --batch_size 4 \
     --total_iters 100000 \
     --eval_interval 500 \
     --eval_batches 20 \
@@ -41,6 +41,7 @@ mkdir -p "${RUN_DIR}" "${CHECKPOINT_DIR}"
     --cosine_cycle_iters 100000 \
     --max_grad_norm 1.0 \
     --seed 42 \
+    --dtype bf16 \
     --device cuda \
     --checkpoint_path "${CHECKPOINT_DIR}/latest.pt"
 

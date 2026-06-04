@@ -26,6 +26,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 data
+checkpoints
+runs
+.vscode
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

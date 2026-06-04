@@ -5,10 +5,6 @@ import torch.nn as nn
 import math
 from einops import einsum, rearrange, reduce
 
-# Transformer快速复习:
-# 1) Embedding: token_id -> 向量
-# 2) TransformerBlock: Norm -> Attention/FFN -> 残差
-# 3) 堆叠多个Block后再做Norm + 输出到词表logits
 END_TOKEN = 50256
 
 class Linear(nn.Module):
@@ -263,6 +259,11 @@ class TransformerLM(nn.Module):
         # 按主流程补全语言模型前向
         # 注意: forward输出logits，不在这里做softmax
         x = self.embd(input_ids)
+
+        # 修改activation的dtype
+        if torch.is_autocast_enabled("cuda"):
+            x = x.to(torch.get_autocast_dtype("cuda"))
+        
         for layer in self.layers:
             x = layer(x) # (b, s, d)
         logits = self.output_embd(self.ln(x))
