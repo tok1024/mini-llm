@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import math
 from einops import einsum, rearrange, reduce
+from mini_llm.kv_cache import LayerKVCache, SimpleKVCache
 
 END_TOKEN = 50256
 
@@ -180,7 +181,7 @@ class RoPE_Qwen(nn.Module):
     
     
 def softmax(in_features: torch.Tensor, dim: int):
-    # 写出数值稳定版softmax
+    # 数值稳定版softmax
     mx = in_features.max(dim=dim, keepdim=True).values
     exp = torch.exp(in_features - mx)
     return exp / exp.sum(dim=dim, keepdim=True)
@@ -188,7 +189,6 @@ def softmax(in_features: torch.Tensor, dim: int):
 
 def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask=None) -> torch.Tensor:
     # import pdb; pdb.set_trace()
-    # 补全缩放点积注意力
     d_k = query.shape[-1] # b, h, s, d
 
     pre_sm_attn = query @ key.transpose(-1, -2) / math.sqrt(d_k)
@@ -211,9 +211,10 @@ class MultiHeadSelfAttention(nn.Module):
         self.Wo = Linear(d_model, d_model)
         self.rope = rope
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    # 增加 start_pos 参数，用于指定开始位置，用于KV Cache
+    def forward(self, x: torch.Tensor, start_pos: int = 0, kv_cache: Optional[LayerKVCache] = None) -> torch.Tensor:
         # 流程总览: x -> QKV投影 -> 分头 -> (可选RoPE) -> 因果注意力 -> 合并头 -> Wo
-        # (复习-挖空): 按上面的流程补完整个前向
+        # 需要注意：当使用KV Cache时，传入的x是当前token，需要补充start_pos到token_positions中
         b, s, d = x.shape
         # 1.投影
         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
@@ -223,19 +224,37 @@ class MultiHeadSelfAttention(nn.Module):
         q = q.reshape(b, s, self.num_heads, d // self.num_heads).transpose(1, 2)
         k = k.reshape(b, s, self.num_heads, d // self.num_heads).transpose(1, 2)
         v = v.reshape(b, s, self.num_heads, d // self.num_heads).transpose(1, 2)
+
         
         # 3. rope
         # 必须先分头，再rope，因为rope是涉及维度的，不能把不同头的维度信息搞混
         if self.rope:
-            token_positions = torch.arange(0, s, device=x.device)
+            token_positions = start_pos + torch.arange(0, s, device=x.device)
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
         
+        # 加入KV Cache
+        if kv_cache is not None:
+            kv_cache.append(k, v)
+        
+        
         # 4. causual attention
-        mask = torch.tril(torch.ones(s, s, dtype=torch.bool, device=x.device))
+        # mask = torch.tril(torch.ones(s, s, dtype=torch.bool, device=x.device))
+        # out = scaled_dot_product_attention(q, k, v, mask)
+        # prefill，decode通用的casual mask模式
+        q_positions = start_pos + torch.arange(0, s, device=x.device) # (q_len, )
+        if kv_cache is not None:
+            k, v = kv_cache.get()
+            kv_positions = torch.arange(0, k.shape[2], device=x.device) # (key_len, )
+        else:
+            kv_positions = q_positions
+        # none 就是插入维度，等价于squeeze(0)
+        mask = (q_positions[..., None] >= kv_positions[None, ...]) # (q_len, key_len)
+        
+        # 5. 计算注意力
         out = scaled_dot_product_attention(q, k, v, mask)
         
-        # 5. 合并再投影
+        # 6. 合并头并投影
         out = self.Wo(out.transpose(1, 2).reshape(b, s, d))
         return out
         
@@ -251,8 +270,8 @@ class TransformerBlock(nn.Module):
         self.ln1 = RMSNorm(d_model=d_model)
         self.ln2 = RMSNorm(d_model=d_model)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.attn(self.ln1(x)) + x
+    def forward(self, x: torch.Tensor, start_pos: int = 0, kv_cache: Optional[LayerKVCache] = None) -> torch.Tensor:
+        x = self.attn(self.ln1(x), start_pos=start_pos, kv_cache=kv_cache) + x
         x = self.ffn(self.ln2(x)) + x
         return x
     
@@ -265,9 +284,8 @@ class TransformerLM(nn.Module):
         self.ln = RMSNorm(d_model=d_model)
         self.output_embd = Linear(d_model, vocab_size)
         
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, start_pos: int = 0, kv_cache: Optional[SimpleKVCache] = None) -> torch.Tensor:
         # import pdb; pdb.set_trace()
-        # 按主流程补全语言模型前向
         # 注意: forward输出logits，不在这里做softmax
         x = self.embd(input_ids)
 
@@ -275,33 +293,29 @@ class TransformerLM(nn.Module):
         if torch.is_autocast_enabled("cuda"):
             x = x.to(torch.get_autocast_dtype("cuda"))
         
-        for layer in self.layers:
-            x = layer(x) # (b, s, d)
+        for layer_idx, layer in enumerate(self.layers):
+            layer_cache = None
+            if kv_cache is not None:
+                layer_cache = kv_cache.layers[layer_idx]
+            x = layer(x, start_pos=start_pos, kv_cache=layer_cache)
         logits = self.output_embd(self.ln(x))
         return logits
     
-    def generate(self, input_ids: torch.Tensor, max_new_tokens: int=256, temperature: Optional[float]=None, topp: Optional[float]=None):
-        total_tokens = 0
-        new_token = -1
-        x = input_ids # B, S
-        while total_tokens <= max_new_tokens and new_token != END_TOKEN:
-            # 先forward
-            logits = self(x)
-            # 计算概率
-            probs = softmax(logits[:, -1, :], dim=-1)
-            if temperature:
-                probs = probs / temperature
-            if topp:
-                # 排序，然后找出满足p的token索引
-                sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-                idx = torch.where(cumulative_probs >= topp)[0][0]
-                probs = sorted_probs[..., :idx+1]
-            new_token = torch.multinomial(probs, num_samples=1).to(x.device)
-            x = torch.cat([x, new_token], dim=-1)
-            total_tokens += 1
-        output_ids = x
-        return output_ids
+    # def generate(self, input_ids: torch.Tensor, max_new_tokens: int=256, temperature: Optional[float]=None, topp: Optional[float]=None, kv_cache: Optional[SimpleKVCache] = None):
+    #     total_tokens = 0
+    #     new_token = -1
+    #     x = input_ids # B, S
+    #     while total_tokens <= max_new_tokens and new_token != END_TOKEN:
+    #         # 排序，然后找出满足p的token索引
+    #         sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+    #         cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+    #         idx = torch.where(cumulative_probs >= topp)[0][0]
+    #         probs = sorted_probs[..., :idx+1]
+    #         new_token = torch.multinomial(probs, num_samples=1).to(x.device)
+    #         x = torch.cat([x, new_token], dim=-1)
+    #         total_tokens += 1
+    #     output_ids = x
+    #     return output_ids
     
     def load_checkpoint(self, src):
         checkpoint = torch.load(src)
