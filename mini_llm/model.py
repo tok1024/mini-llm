@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import math
 from einops import einsum, rearrange, reduce
-from mini_llm.kv_cache import LayerKVCache, SimpleKVCache
+from mini_llm.kv_cache import LayerKVCache, SimpleKVCache, PagedLayerKVCache
 
 END_TOKEN = 50256
 
@@ -200,6 +200,35 @@ def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: 
     
     return attn @ value
 
+
+def paged_scaled_dot_product_attention(
+    query: torch.Tensor,
+    kv_cache: PagedLayerKVCache,
+    start_pos: int,
+) -> torch.Tensor:
+    """Paged attention 骨架：直接读取 paged KV pool，不 materialize 连续 K/V。"""
+    state = kv_cache.get_paged_state()
+    batch_size, num_heads, query_len, head_dim = query.shape
+    if batch_size != 1:
+        raise NotImplementedError("TODO: paged attention currently only plans for batch_size=1")
+
+    # TODO: 等级 A：按 block_table 遍历物理 block，计算每页 scores，最后合并 scores 后算输出。
+    # 需要的数据：
+    #   state.k_pool: [num_blocks, H, block_size, D]
+    #   state.v_pool: [num_blocks, H, block_size, D]
+    #   state.block_table: logical block -> physical block
+    #   state.length: 当前有效 KV token 数
+    #   state.block_size: 每个物理 block 容纳 token 数
+    #
+    # TODO: 等级 B：用 streaming softmax，不 cat K/V，也不 cat scores。
+    # 核心状态：running_max / running_sum / running_out。
+    #
+    # TODO: causal mask 需要用逻辑位置：
+    #   q_positions = start_pos + arange(query_len)
+    #   key_positions = logical_block_start + arange(valid_block_len)
+    _ = (state, num_heads, head_dim)
+    raise NotImplementedError("TODO: implement paged attention over block_table without contiguous K/V")
+
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, d_model, num_heads, rope=None):
         super().__init__()
@@ -236,6 +265,9 @@ class MultiHeadSelfAttention(nn.Module):
         # 加入KV Cache
         if kv_cache is not None:
             kv_cache.append(k, v)
+            if getattr(kv_cache, "is_paged", False):
+                out = paged_scaled_dot_product_attention(q, kv_cache, start_pos)
+                return self.Wo(out.transpose(1, 2).reshape(b, s, d))
         
         
         # 4. causual attention

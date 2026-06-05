@@ -171,6 +171,132 @@ class StaticKVCache:
         return self.layers[0].length if self.layers else 0
 
 
+@dataclass
+class PagedLayerState:
+    """Paged attention 所需的单层 cache 状态"""
+    k_pool: torch.Tensor
+    v_pool: torch.Tensor
+    block_table: List[int]
+    length: int
+    block_size: int
+
+
+class PagedLayerKVCache:
+    """单层分页 KV Cache 骨架（不把 K/V cat 成连续 tensor）"""
+    is_paged = True
+
+    def __init__(
+        self,
+        num_blocks: int,
+        num_heads: int,
+        block_size: int,
+        head_dim: int,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ):
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.block_size = block_size
+        self.head_dim = head_dim
+        self.k_pool = torch.empty(num_blocks, num_heads, block_size, head_dim, device=device, dtype=dtype)
+        self.v_pool = torch.empty(num_blocks, num_heads, block_size, head_dim, device=device, dtype=dtype)
+        self.free_blocks: List[int] = list(range(num_blocks))
+        self.block_table: List[int] = []
+        self.length = 0
+        self.batch_size = 0
+
+    def allocate_block(self) -> int:
+        """申请一个物理 block"""
+        if not self.free_blocks:
+            raise RuntimeError("No free KV blocks")
+        return self.free_blocks.pop()
+
+    def append(self, k_new: torch.Tensor, v_new: torch.Tensor):
+        """把新的 K/V 写入分页 pool。TODO: 补完整 token -> block/offset 写入逻辑"""
+        assert k_new.shape == v_new.shape, "k_new and v_new shape mismatch"
+        assert k_new.dim() == 4, "k_new should be [B, H, T_new, D]"
+
+        batch_size, num_heads, new_len, head_dim = k_new.shape
+        if batch_size != 1:
+            raise NotImplementedError("PagedLayerKVCache skeleton only supports batch_size=1")
+        if num_heads != self.num_heads:
+            raise ValueError(f"num_heads mismatch: got {num_heads}, expected {self.num_heads}")
+        if head_dim != self.head_dim:
+            raise ValueError(f"head_dim mismatch: got {head_dim}, expected {self.head_dim}")
+
+        self.batch_size = batch_size
+
+        for token_offset in range(new_len):
+            token_pos = self.length
+            logical_block_idx = token_pos // self.block_size
+            offset_in_block = token_pos % self.block_size
+
+            if logical_block_idx == len(self.block_table):
+                self.block_table.append(self.allocate_block())
+
+            physical_block_idx = self.block_table[logical_block_idx]
+
+            # TODO: 写入当前 token 的 K/V 到物理 block。
+            # 目标形状:
+            #   k_new[0, :, token_offset, :] -> [H, D]
+            #   self.k_pool[physical_block_idx, :, offset_in_block, :] -> [H, D]
+            _ = (token_offset, offset_in_block, physical_block_idx)
+            raise NotImplementedError("TODO: write k_new/v_new token into paged KV pool")
+
+    def get_paged_state(self) -> PagedLayerState:
+        """返回 paged attention 需要的元信息，不返回连续 K/V"""
+        return PagedLayerState(
+            k_pool=self.k_pool,
+            v_pool=self.v_pool,
+            block_table=self.block_table,
+            length=self.length,
+            block_size=self.block_size,
+        )
+
+    def get(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Paged attention 不应该走连续 K/V 接口"""
+        raise RuntimeError("PagedLayerKVCache does not expose contiguous K/V. Use get_paged_state().")
+
+    def reset(self):
+        """释放当前 sequence 占用的物理 blocks"""
+        self.free_blocks.extend(reversed(self.block_table))
+        self.block_table = []
+        self.length = 0
+        self.batch_size = 0
+
+
 class PagedKVCache:
-    """分页版本（最终目标）"""
-    pass
+    """多层分页 KV Cache 容器骨架"""
+    is_paged = True
+
+    def __init__(
+        self,
+        num_layers: int,
+        num_blocks: int,
+        num_heads: int,
+        block_size: int,
+        head_dim: int,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ):
+        self.num_layers = num_layers
+        self.layers: List[PagedLayerKVCache] = [
+            PagedLayerKVCache(
+                num_blocks=num_blocks,
+                num_heads=num_heads,
+                block_size=block_size,
+                head_dim=head_dim,
+                device=device,
+                dtype=dtype,
+            )
+            for _ in range(num_layers)
+        ]
+
+    def reset(self):
+        """重置所有层"""
+        for layer in self.layers:
+            layer.reset()
+
+    def get_length(self) -> int:
+        """返回当前缓存长度（所有层应该一致）"""
+        return self.layers[0].length if self.layers else 0
