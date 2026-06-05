@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
@@ -7,11 +8,22 @@ from einops import einsum, rearrange, reduce
 
 END_TOKEN = 50256
 
+@dataclass
+class ModelConfig:
+    vocab_size: int = 50257
+    context_length: int = 1024
+    d_model: int = 1152
+    num_layers: int = 24
+    num_heads: int = 18
+    head_dim: Optional[int] = None
+    d_ff: int = 3072
+    rope_theta: float = 10000.0
+
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
         # 初始化权重
         super().__init__()
-        # 权重 W 存储为原矩阵(dout, din)，而非转置. 使用时右乘x，如 W @ x
+        # 权重 W 存储为原矩阵(dout, din)，而非转置. 使用时用x乘w的转置 x @ w.T
         self.weight = nn.Parameter(torch.empty(out_features, in_features, device=device, dtype=dtype)) 
         self.init_param()
         
@@ -45,7 +57,7 @@ class Embedding(nn.Module):
         nn.init.trunc_normal_(self.embeddings, mean=mean, std=std, a=-3, b=3)
         
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        # (复习-挖空): 根据token_ids做embedding查表
+        # 根据token_ids做embedding查表
         return self.embeddings[token_ids]
     
 class RMSNorm(nn.Module):
@@ -60,7 +72,6 @@ class RMSNorm(nn.Module):
         in_dtype = x.dtype
         x = x.float()
 
-        # 补全RMSNorm核心计算（平方、归一化因子、缩放）
         # 要求: 结果转回输入dtype
         rms = torch.sqrt(((x**2).mean(dim=-1, keepdim=True) + self.eps))
         out = x * self.gain / rms
@@ -295,3 +306,15 @@ class TransformerLM(nn.Module):
     def load_checkpoint(self, src):
         checkpoint = torch.load(src)
         self.load_state_dict(checkpoint['model_state'])
+
+def build_model(model_config: ModelConfig) -> TransformerLM:
+    model = TransformerLM(
+        model_config.d_model,
+        model_config.num_heads,
+        model_config.d_ff,
+        model_config.vocab_size,
+        model_config.context_length,
+        model_config.num_layers,
+        model_config.rope_theta,
+    )
+    return model

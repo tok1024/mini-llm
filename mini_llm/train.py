@@ -10,19 +10,13 @@ from typing import IO, BinaryIO, Iterable, Optional
 import numpy as np
 import torch
 
-from mini_llm.model import TransformerLM
+from mini_llm.model import TransformerLM, ModelConfig, build_model
 
 @dataclass
 class TrainConfig:
     train_tokens_path: str
     valid_tokens_path: str
-    vocab_size: int = 10000
-    context_length: int = 256
-    d_model: int = 512
-    num_layers: int = 8
-    num_heads: int = 8
-    d_ff: int = 1344
-    rope_theta: float = 10000.0
+    model : ModelConfig
     batch_size: int = 32
     total_iters: int = 2000
     eval_interval: int = 200
@@ -244,7 +238,7 @@ def save_checkpoint(
         'iteration': iteration
     }
     # 自动创建目录
-    out_path = Path(out_path)
+    out_path = Path(str(out_path))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint, out_path)
 
@@ -270,24 +264,11 @@ def evaluate(
     losses = []
     with torch.no_grad():
         for _ in range(cfg.eval_batches):
-            x, y = get_batch(valid_data, cfg.batch_size, cfg.context_length, cfg.device)
+            x, y = get_batch(valid_data, cfg.batch_size, cfg.model.context_length, cfg.device)
             loss = forward_loss(model, x, y, cfg)
             losses.append(loss.item())
     model.train()
     return float(np.mean(losses))
-
-
-def build_model(cfg: TrainConfig) -> TransformerLM:
-    model = TransformerLM(
-        d_model=cfg.d_model,
-        num_heads=cfg.num_heads,
-        d_ff=cfg.d_ff,
-        vocab_size=cfg.vocab_size,
-        context_length=cfg.context_length,
-        num_layers=cfg.num_layers,
-        rope_theta=cfg.rope_theta,
-    )
-    return model.to(cfg.device)
 
 def write_metrics(metrics: dict[str, float | int | str], path:str) -> None:
     out_path = Path(path)
@@ -301,12 +282,12 @@ def write_metrics(metrics: dict[str, float | int | str], path:str) -> None:
 
 def train(cfg: TrainConfig) -> None:
     set_seed(cfg.seed)
-    model = build_model(cfg)
+    model = build_model(cfg.model)
     opt = AdamW(model.parameters(), lr=cfg.max_learning_rate)
 
     train_data = load_token_array(cfg.train_tokens_path)
     eval_data = load_token_array(cfg.valid_tokens_path)
-    tokens_per_iter = cfg.batch_size * cfg.context_length
+    tokens_per_iter = cfg.batch_size * cfg.model.context_length
     train_start_time = time.perf_counter()
 
     print(
@@ -330,7 +311,7 @@ def train(cfg: TrainConfig) -> None:
         for group in opt.param_groups:
             group['lr'] = lr
         # 取一个小batch
-        batch, targets = get_batch(train_data, cfg.batch_size, cfg.context_length, cfg.device)
+        batch, targets = get_batch(train_data, cfg.batch_size, cfg.model.context_length, cfg.device)
         
         loss = forward_loss(model, batch, targets, cfg)
         loss.backward()
