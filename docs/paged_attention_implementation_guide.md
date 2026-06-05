@@ -609,18 +609,18 @@ while not finished:
 ## 11. 建议文件边界
 
 ```text
-cs336_basics/model.py
+mini_llm/model.py
   TransformerLM / TransformerBlock / MultiHeadSelfAttention
   支持 start_pos 和可选 cache
   默认训练行为不变
 
-cs336_basics/kv_cache.py
+mini_llm/kv_cache.py
   LayerKVCache
   ModelKVCache
   StaticKVCache
   PagedKVCache
 
-cs336_basics/inference.py
+mini_llm/inference.py
   InferenceEngine
   RequestState
   SamplingConfig

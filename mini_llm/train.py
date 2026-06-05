@@ -10,7 +10,7 @@ from typing import IO, BinaryIO, Iterable, Optional
 import numpy as np
 import torch
 
-from cs336_basics.model import TransformerLM
+from mini_llm.model import TransformerLM
 
 @dataclass
 class TrainConfig:
@@ -385,7 +385,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--checkpoint_path", type=str, default="/sda1/szl/cs336/checkpoints/latest.pt")
+    parser.add_argument("--checkpoint_path", type=str, default="checkpoints/latest.pt")
     parser.add_argument("--dtype", type=str, default="bf16")
     parser.add_argument("--metrics_path", type=str, default="runs/0.5b/metrics.csv")
 

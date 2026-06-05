@@ -1,39 +1,50 @@
-# CS336 Spring 2025 Assignment 1: Basics
+# MiniLLM
 
-For a full description of the assignment, see the assignment handout at
-[cs336_spring2025_assignment1_basics.pdf](./cs336_spring2025_assignment1_basics.pdf)
+MiniLLM 是一个 from-scratch decoder-only Transformer 训练与推理实验项目。
 
-If you see any issues with the assignment handout or code, please feel free to
-raise a GitHub issue or open a pull request with a fix.
+当前项目包含：
+
+- BPE tokenizer
+- TransformerLM
+- training loop
+- checkpoint / metrics
+- simplified PagedAttention 学习与实现指南
 
 ## Setup
 
-### Environment
-We manage our environments with `uv` to ensure reproducibility, portability, and ease of use.
-Install `uv` [here](https://github.com/astral-sh/uv) (recommended), or run `pip install uv`/`brew install uv`.
-We recommend reading a bit about managing projects in `uv` [here](https://docs.astral.sh/uv/guides/projects/#managing-dependencies) (you will not regret it!).
+本项目使用 `uv` 管理环境。安装方式见 [uv 官方文档](https://docs.astral.sh/uv/)。
 
-You can now run any code in the repo using
+运行项目代码：
+
 ```sh
 uv run <python_file_path>
 ```
-and the environment will be automatically solved and activated when necessary.
 
-### Run unit tests
-
+运行测试：
 
 ```sh
 uv run pytest
 ```
 
-Initially, all tests should fail with `NotImplementedError`s.
-To connect your implementation to the tests, complete the
-functions in [./tests/adapters.py](./tests/adapters.py).
+## Training
 
-### Download data
-Download the TinyStories data and a subsample of OpenWebText
+训练脚本示例：
 
-``` sh
+```sh
+bash scripts/train_0.5b.sh
+```
+
+训练入口：
+
+```sh
+uv run python -m mini_llm.train
+```
+
+## Data
+
+可使用 TinyStories 和 OpenWebText 子集作为训练数据：
+
+```sh
 mkdir -p data
 cd data
 
@@ -48,3 +59,11 @@ gunzip owt_valid.txt.gz
 cd ..
 ```
 
+## Docs
+
+- `docs/STUDY_GUIDE.md`
+- `docs/paged_attention_implementation_guide.md`
+
+## Acknowledgements
+
+本项目起源于公开课 Transformer 训练作业，并在此基础上扩展训练和推理实验。

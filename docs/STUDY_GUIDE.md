@@ -13,11 +13,11 @@
 
 ### 1.2 补全顺序（5 个 TODO）
 
-1. [cs336_basics/tokenizer.py](cs336_basics/tokenizer.py#L125): `count_pairs_in_word`
-2. [cs336_basics/tokenizer.py](cs336_basics/tokenizer.py#L165): `pop_valid_best_pair`
-3. [cs336_basics/tokenizer.py](cs336_basics/tokenizer.py#L142): `build_pair_statistics` 内局部统计接回全局
-4. [cs336_basics/tokenizer.py](cs336_basics/tokenizer.py#L152): `push_pair_to_pq` 的过滤与 tie-break
-5. [cs336_basics/tokenizer.py](cs336_basics/tokenizer.py#L283): `train_bpe` step 5 的增量加回
+1. [mini_llm/tokenizer.py](mini_llm/tokenizer.py#L125): `count_pairs_in_word`
+2. [mini_llm/tokenizer.py](mini_llm/tokenizer.py#L165): `pop_valid_best_pair`
+3. [mini_llm/tokenizer.py](mini_llm/tokenizer.py#L142): `build_pair_statistics` 内局部统计接回全局
+4. [mini_llm/tokenizer.py](mini_llm/tokenizer.py#L152): `push_pair_to_pq` 的过滤与 tie-break
+5. [mini_llm/tokenizer.py](mini_llm/tokenizer.py#L283): `train_bpe` step 5 的增量加回
 
 建议顺序原因: 1/2 是基础工具，3/4 是结构接线，5 是主循环核心。
 
@@ -31,23 +31,23 @@
 
 ### 2.1 先读结构，再补函数
 
-1. 总入口: [cs336_basics/model.py](cs336_basics/model.py#L171)
-2. Block 结构: [cs336_basics/model.py](cs336_basics/model.py#L159)
-3. Attention 主体: [cs336_basics/model.py](cs336_basics/model.py#L138)
+1. 总入口: [mini_llm/model.py](mini_llm/model.py#L171)
+2. Block 结构: [mini_llm/model.py](mini_llm/model.py#L159)
+3. Attention 主体: [mini_llm/model.py](mini_llm/model.py#L138)
 
 ### 2.2 补全顺序（从小到大）
 
-1. [cs336_basics/model.py](cs336_basics/model.py#L32): `Linear.forward`
-2. [cs336_basics/model.py](cs336_basics/model.py#L50): `Embedding.forward`
-3. [cs336_basics/model.py](cs336_basics/model.py#L70): `SiLU`
-4. [cs336_basics/model.py](cs336_basics/model.py#L65): `RMSNorm.forward`
-5. [cs336_basics/model.py](cs336_basics/model.py#L86): `SwiGLU.forward`
-6. [cs336_basics/model.py](cs336_basics/model.py#L126): `RoPE.forward`
-7. [cs336_basics/model.py](cs336_basics/model.py#L130): `softmax`
-8. [cs336_basics/model.py](cs336_basics/model.py#L135): `scaled_dot_product_attention`
-9. [cs336_basics/model.py](cs336_basics/model.py#L154): `MultiHeadSelfAttention.forward`
-10. [cs336_basics/model.py](cs336_basics/model.py#L167): `TransformerBlock.forward`
-11. [cs336_basics/model.py](cs336_basics/model.py#L180): `TransformerLM.forward`
+1. [mini_llm/model.py](mini_llm/model.py#L32): `Linear.forward`
+2. [mini_llm/model.py](mini_llm/model.py#L50): `Embedding.forward`
+3. [mini_llm/model.py](mini_llm/model.py#L70): `SiLU`
+4. [mini_llm/model.py](mini_llm/model.py#L65): `RMSNorm.forward`
+5. [mini_llm/model.py](mini_llm/model.py#L86): `SwiGLU.forward`
+6. [mini_llm/model.py](mini_llm/model.py#L126): `RoPE.forward`
+7. [mini_llm/model.py](mini_llm/model.py#L130): `softmax`
+8. [mini_llm/model.py](mini_llm/model.py#L135): `scaled_dot_product_attention`
+9. [mini_llm/model.py](mini_llm/model.py#L154): `MultiHeadSelfAttention.forward`
+10. [mini_llm/model.py](mini_llm/model.py#L167): `TransformerBlock.forward`
+11. [mini_llm/model.py](mini_llm/model.py#L180): `TransformerLM.forward`
 
 ### 2.3 关键公式与结构
 

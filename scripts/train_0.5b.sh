@@ -20,7 +20,7 @@ mkdir -p "${RUN_DIR}" "${CHECKPOINT_DIR}"
   echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
   echo "started_at=$(date -Is)"
 
-  uv run python -m cs336_basics.train \
+  uv run python -m mini_llm.train \
     --train_tokens_path data/ts-train.npy \
     --valid_tokens_path data/ts-val.npy \
     --vocab_size 50257 \

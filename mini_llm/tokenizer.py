@@ -8,7 +8,7 @@ import os
 from typing import Iterable, Iterator, cast
 import json
 
-input_file = '/home/wly/szl_all_code/cs336-all/assignment1/data/small_tiny.txt'
+input_file = 'data/small_tiny.txt'
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 vocab_size = 600
 
@@ -528,7 +528,7 @@ if __name__=="__main__":
     new_token_id = tokenizer.encode_vocab['<ttt>'.encode('utf-8')]
     print(f"new token id = {new_token_id}")
     # 测试文本
-    test_text = "I love cs336!"
+    test_text = "I love MiniLLM!"
 
     print(f"test: {test_text}")
     

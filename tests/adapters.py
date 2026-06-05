@@ -9,9 +9,9 @@ import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
-from cs336_basics.tokenizer import Tokenizer, train_bpe
-from cs336_basics.model import Linear, Embedding, RMSNorm, SiLU, SwiGLU, RoPE, RoPE_Qwen, softmax, scaled_dot_product_attention, MultiHeadSelfAttention, TransformerBlock, TransformerLM
-from cs336_basics.train import cross_entropy_loss, AdamW, get_lr_cosine_schedule, get_batch, clip_gradients, load_checkpoint, save_checkpoint
+from mini_llm.tokenizer import Tokenizer, train_bpe
+from mini_llm.model import Linear, Embedding, RMSNorm, SiLU, SwiGLU, RoPE, RoPE_Qwen, softmax, scaled_dot_product_attention, MultiHeadSelfAttention, TransformerBlock, TransformerLM
+from mini_llm.train import cross_entropy_loss, AdamW, get_lr_cosine_schedule, get_batch, clip_gradients, load_checkpoint, save_checkpoint
 def run_linear(
     d_in: int,
     d_out: int,
