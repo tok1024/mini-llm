@@ -4,7 +4,6 @@ from typing import Optional, List
 
 import torch
 
-from mini_llm import kv_cache
 from mini_llm.model import ModelConfig, build_model
 from mini_llm.tokenizer import get_tokenizer_from_vocab_merges_path
 from mini_llm.kv_cache import SimpleKVCache
@@ -85,11 +84,14 @@ class InferenceEngine:
     @torch.no_grad()
     def generate_simple_kvcache(self, input_ids: List[int]) -> GenerationResult:
         self.kv_cache.reset()
-        total_tokens = 0
+        if self.config.max_new_tokens <= 0:
+            return GenerationResult(generated_ids=[], full_ids=list(input_ids), generated_text="")
+
         new_token = self.prefill_kvcache(input_ids)
         x = torch.tensor([[new_token]], dtype=torch.long, device=self.device) # 1,
         generated_ids = [new_token]
         full_ids = input_ids + [new_token]
+        total_tokens = 1
         
         while total_tokens < self.config.max_new_tokens and new_token != self.config.eos_token_id:
             start_pos = self.kv_cache.get_length()
