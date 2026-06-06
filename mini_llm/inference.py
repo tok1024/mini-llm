@@ -6,7 +6,7 @@ import torch
 
 from mini_llm.model import ModelConfig, build_model
 from mini_llm.tokenizer import get_tokenizer_from_vocab_merges_path
-from mini_llm.kv_cache import SimpleKVCache
+from mini_llm.kv_cache import SimpleKVCache, StaticKVCache, PagedKVCache
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VOCAB_PATH = PROJECT_ROOT / "tests" / "fixtures" / "gpt2_vocab.json"
@@ -103,12 +103,61 @@ class InferenceEngine:
             full_ids.append(new_token)
         return GenerationResult(generated_ids=generated_ids, full_ids=full_ids, generated_text=self.tokenizer.decode(generated_ids))
 
+    def _build_static_kv_cache(self, input_len: int) -> StaticKVCache:
+        max_seq_len = input_len + self.config.max_new_tokens
+        head_dim = self.config.model.d_model // self.config.model.num_heads
+        return StaticKVCache(
+            num_layers=self.config.model.num_layers,
+            max_batch_size=1,
+            num_heads=self.config.model.num_heads,
+            max_seq_len=max_seq_len,
+            head_dim=head_dim,
+            device=self.device,
+            dtype=next(self.model.parameters()).dtype,
+        )
+
+    @torch.no_grad()
+    def generate_static_kvcache(self, input_ids: List[int]) -> GenerationResult:
+        old_kv_cache = self.kv_cache
+        self.kv_cache = self._build_static_kv_cache(len(input_ids))
+        try:
+            return self.generate_simple_kvcache(input_ids)
+        finally:
+            self.kv_cache = old_kv_cache
+
+    def _build_paged_kv_cache(self, input_len: int, block_size: int = 16) -> PagedKVCache:
+        max_tokens = input_len + self.config.max_new_tokens
+        num_blocks = (max_tokens + block_size - 1) // block_size
+        head_dim = self.config.model.d_model // self.config.model.num_heads
+        return PagedKVCache(
+            num_layers=self.config.model.num_layers,
+            num_blocks=num_blocks,
+            num_heads=self.config.model.num_heads,
+            block_size=block_size,
+            head_dim=head_dim,
+            device=self.device,
+            dtype=next(self.model.parameters()).dtype,
+        )
+
+    @torch.no_grad()
+    def generate_paged_kvcache(self, input_ids: List[int]) -> GenerationResult:
+        old_kv_cache = self.kv_cache
+        self.kv_cache = self._build_paged_kv_cache(len(input_ids))
+        try:
+            return self.generate_simple_kvcache(input_ids)
+        finally:
+            self.kv_cache = old_kv_cache
+
     def generate(self, prompt: str, method: str = "naive") -> GenerationResult:
         input_ids = self.tokenizer.encode(prompt)
         if method == "naive":
             return self.generate_naive(input_ids)
         elif method == "simple_kvcache":
             return self.generate_simple_kvcache(input_ids)
+        elif method == "static_kvcache":
+            return self.generate_static_kvcache(input_ids)
+        elif method == "paged_kvcache":
+            return self.generate_paged_kvcache(input_ids)
         else:
             raise ValueError(f"Invalid generation method: {method}")
 

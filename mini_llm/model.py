@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import math
 from einops import einsum, rearrange, reduce
-from mini_llm.kv_cache import LayerKVCache, SimpleKVCache, PagedLayerKVCache
+from mini_llm.kv_cache import PagedLayerKVCache
 
 END_TOKEN = 50256
 
@@ -206,28 +206,28 @@ def paged_scaled_dot_product_attention(
     kv_cache: PagedLayerKVCache,
     start_pos: int,
 ) -> torch.Tensor:
-    """Paged attention 骨架：直接读取 paged KV pool，不 materialize 连续 K/V。"""
+    """Paged attention：flatten physical KV pool，用 BlockMask 保持逻辑顺序和 causal 约束。"""
+    from torch.nn.attention.flex_attention import flex_attention
+
     state = kv_cache.get_paged_state()
     batch_size, num_heads, query_len, head_dim = query.shape
     if batch_size != 1:
-        raise NotImplementedError("TODO: paged attention currently only plans for batch_size=1")
+        raise NotImplementedError("paged attention currently only supports batch_size=1")
 
-    # TODO: 等级 A：按 block_table 遍历物理 block，计算每页 scores，最后合并 scores 后算输出。
-    # 需要的数据：
-    #   state.k_pool: [num_blocks, H, block_size, D]
-    #   state.v_pool: [num_blocks, H, block_size, D]
-    #   state.block_table: logical block -> physical block
-    #   state.length: 当前有效 KV token 数
-    #   state.block_size: 每个物理 block 容纳 token 数
-    #
-    # TODO: 等级 B：用 streaming softmax，不 cat K/V，也不 cat scores。
-    # 核心状态：running_max / running_sum / running_out。
-    #
-    # TODO: causal mask 需要用逻辑位置：
-    #   q_positions = start_pos + arange(query_len)
-    #   key_positions = logical_block_start + arange(valid_block_len)
-    _ = (state, num_heads, head_dim)
-    raise NotImplementedError("TODO: implement paged attention over block_table without contiguous K/V")
+    k_pool, v_pool, _block_table = state.as_flex_inputs()
+    k = k_pool.permute(1, 0, 2, 3).reshape(1, num_heads, -1, head_dim)
+    v = v_pool.permute(1, 0, 2, 3).reshape(1, num_heads, -1, head_dim)
+    block_mask = state.build_block_mask(query_len=query_len, start_pos=start_pos)
+    physical_to_logical = state.physical_to_logical
+
+    def score_mod(score: torch.Tensor, batch: torch.Tensor, head: torch.Tensor, query_pos: torch.Tensor, kv_pos: torch.Tensor) -> torch.Tensor:
+        _ = (batch, head)
+        logical_key_pos = physical_to_logical[kv_pos]
+        logical_query_pos = start_pos + query_pos
+        keep = (logical_key_pos >= 0) & (logical_key_pos <= logical_query_pos)
+        return torch.where(keep, score, torch.full_like(score, float("-inf")))
+
+    return flex_attention(query, k, v, score_mod=score_mod, block_mask=block_mask)
 
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, d_model, num_heads, rope=None):
@@ -241,7 +241,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.rope = rope
         
     # 增加 start_pos 参数，用于指定开始位置，用于KV Cache
-    def forward(self, x: torch.Tensor, start_pos: int = 0, kv_cache: Optional[LayerKVCache] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, start_pos: int = 0, kv_cache=None) -> torch.Tensor:
         # 流程总览: x -> QKV投影 -> 分头 -> (可选RoPE) -> 因果注意力 -> 合并头 -> Wo
         # 需要注意：当使用KV Cache时，传入的x是当前token，需要补充start_pos到token_positions中
         b, s, d = x.shape
@@ -302,7 +302,7 @@ class TransformerBlock(nn.Module):
         self.ln1 = RMSNorm(d_model=d_model)
         self.ln2 = RMSNorm(d_model=d_model)
         
-    def forward(self, x: torch.Tensor, start_pos: int = 0, kv_cache: Optional[LayerKVCache] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, start_pos: int = 0, kv_cache=None) -> torch.Tensor:
         x = self.attn(self.ln1(x), start_pos=start_pos, kv_cache=kv_cache) + x
         x = self.ffn(self.ln2(x)) + x
         return x
@@ -316,7 +316,7 @@ class TransformerLM(nn.Module):
         self.ln = RMSNorm(d_model=d_model)
         self.output_embd = Linear(d_model, vocab_size)
         
-    def forward(self, input_ids: torch.Tensor, start_pos: int = 0, kv_cache: Optional[SimpleKVCache] = None) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, start_pos: int = 0, kv_cache=None) -> torch.Tensor:
         # import pdb; pdb.set_trace()
         # 注意: forward输出logits，不在这里做softmax
         x = self.embd(input_ids)
