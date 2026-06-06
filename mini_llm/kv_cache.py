@@ -65,9 +65,6 @@ class SimpleKVCache:
         """返回当前缓存长度（所有层应该一致）"""
         return self.layers[0].length if self.layers else 0
 
-
-# ==================== 后续扩展 ====================
-
 class StaticLayerKVCache:
     """单层预分配 KV Cache"""
     def __init__(
@@ -105,6 +102,7 @@ class StaticLayerKVCache:
         if end > self.max_seq_len:
             raise ValueError(f"KV cache length {end} exceeds max_seq_len {self.max_seq_len}")
 
+        # 写切片
         self.k[:batch_size, :, self.length:end, :].copy_(k_new)
         self.v[:batch_size, :, self.length:end, :].copy_(v_new)
         self.length = end
@@ -182,7 +180,7 @@ class PagedLayerState:
 
 
 class PagedLayerKVCache:
-    """单层分页 KV Cache 骨架（不把 K/V cat 成连续 tensor）"""
+    """单层分页 KV Cache 骨架"""
     is_paged = True
 
     def __init__(
@@ -198,6 +196,7 @@ class PagedLayerKVCache:
         self.num_heads = num_heads
         self.block_size = block_size
         self.head_dim = head_dim
+        # 这里的直觉是：block的维度和sequence对齐
         self.k_pool = torch.empty(num_blocks, num_heads, block_size, head_dim, device=device, dtype=dtype)
         self.v_pool = torch.empty(num_blocks, num_heads, block_size, head_dim, device=device, dtype=dtype)
         self.free_blocks: List[int] = list(range(num_blocks))
@@ -236,12 +235,10 @@ class PagedLayerKVCache:
 
             physical_block_idx = self.block_table[logical_block_idx]
 
-            # TODO: 写入当前 token 的 K/V 到物理 block。
-            # 目标形状:
             #   k_new[0, :, token_offset, :] -> [H, D]
             #   self.k_pool[physical_block_idx, :, offset_in_block, :] -> [H, D]
-            _ = (token_offset, offset_in_block, physical_block_idx)
-            raise NotImplementedError("TODO: write k_new/v_new token into paged KV pool")
+            self.k_pool[physical_block_idx, :, offset_in_block, :] = k_new[0, :, token_offset, :]
+            self.v_pool[physical_block_idx, :, offset_in_block, :] = v_new[0, :, token_offset, :]
 
     def get_paged_state(self) -> PagedLayerState:
         """返回 paged attention 需要的元信息，不返回连续 K/V"""
